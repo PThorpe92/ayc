@@ -79,8 +79,6 @@ func (an *Analyzer) Visit(node Node) {
 			n.Value = an.attemptConstEval(n.Value)
 		}
 		an.pushNode(&PrintCall{Value: n.Value})
-	case *IfExpr:
-		an.pushNode(an.foldConditional(n))
 	case *ReAssignExpr:
 		if _, ok := an.vars[n.Variable.Name]; !ok {
 			panic(fmt.Sprintf("variable %s used before declaration", n.Variable))
@@ -129,28 +127,6 @@ func (an *Analyzer) attemptConstEval(expr Expr) Expr {
 	default:
 		return nil
 	}
-}
-
-func (an *Analyzer) evalConditionalExpr(cond *IfExpr) Expr {
-	cond.Condition = an.attemptConstEval(cond.Condition)
-	if cond.Condition == nil {
-		return cond
-	}
-	if cond.Condition.(*BoolLiteral).bool {
-		return cond.ThenBranch
-	}
-	return cond.ElseBranch
-}
-
-func (an *Analyzer) foldConditional(cond *IfExpr) Expr {
-	cond.Condition = an.attemptConstEval(cond.Condition)
-	if cond.Condition == nil {
-		return cond
-	}
-	if cond.Condition.(*BoolLiteral).bool {
-		return cond.ThenBranch
-	}
-	return cond.ElseBranch
 }
 
 func (an *Analyzer) evalBinaryExpr(op tokenKind, l, r Expr) Expr {

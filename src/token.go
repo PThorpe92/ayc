@@ -89,6 +89,7 @@ const (
 	Let
 	Then
 	Int
+	Colon
 	Semicolon
 	False
 	And
@@ -175,6 +176,8 @@ func (tk tokenKind) ToString() string {
 		return "String"
 	case Semicolon:
 		return "Semicolon"
+	case Colon:
+		return "Colon"
 	case False:
 		return "False"
 	case And:
@@ -283,6 +286,8 @@ func fromChar(char rune) tokenKind {
 		return Underscore
 	case ',':
 		return Comma
+	case ':':
+		return Colon
 	case '!':
 		return Bang
 	case '%':

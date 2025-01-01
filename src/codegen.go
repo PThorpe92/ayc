@@ -4,7 +4,9 @@ import (
 	"encoding/gob"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
+	"slices"
 	"strings"
 )
 
@@ -129,6 +131,13 @@ const (
 func (oc Opcode) String() string {
 	return opMap[oc]
 }
+func init() {
+	gob.Register(Instruction{})
+	gob.Register(Opcode(0))
+	gob.Register(Register(0))
+	gob.Register(LitValue{})
+	gob.Register(TempReg{})
+}
 
 type TempReg struct {
 	Reg int
@@ -194,6 +203,7 @@ var opcodeMap = map[tokenKind]Opcode{
 	Gte:    JGE,
 	Lte:    JLE,
 	Return: RET,
+	EqEq:   MOV_IF,
 }
 
 func (be *BytecodeEmitter) Emit(opcode Opcode, args ...interface{}) {
@@ -235,10 +245,12 @@ func (be *BytecodeEmitter) Visit(node Node) {
 		funcLabel := "__func%_" + n.Name.Name
 		be.EmitLabel(funcLabel)
 		be.funcMap[n.Name.Name] = funcLabel
-		for i := len(n.Params) - 1; i >= 0; i-- {
-			param := n.Params[i]
+		tmp := n.Params
+		slices.Reverse(tmp)
+		for _, param := range tmp {
 			reg := be.AllocateRegister(param.Name)
-			be.Emit(POP, reg) // Pop into register
+			be.Emit(POP, reg)
+			slog.Debug("Allocated register for param %s: %d", param.Name, reg)
 			be.varRegisterMap[param.Name] = reg
 		}
 		hasRet := false
@@ -247,7 +259,7 @@ func (be *BytecodeEmitter) Visit(node Node) {
 			case *ReturnExpr:
 				hasRet = true
 				valReg := be.CompileExpr(st.Value, false)
-				be.Emit(PUSH, Register(valReg)) // push return value
+				be.Emit(PUSH, Register(valReg))
 				be.Emit(RET)
 			default:
 				be.Visit(st)
@@ -259,6 +271,16 @@ func (be *BytecodeEmitter) Visit(node Node) {
 		}
 	case *CallExpr:
 		_ = be.CompileExpr(n, false)
+	case *IfStmt:
+		elseLabel := be.NewLabel()
+		endLabel := be.NewLabel()
+		condReg := be.CompileExpr(n.Condition, true)
+		be.Emit(JMP_IF, condReg, elseLabel)
+		be.Visit(n.IfBlock)
+		be.Emit(JMP, endLabel)
+		be.EmitLabel(elseLabel)
+		be.Visit(n.ElseBlock)
+		be.EmitLabel(endLabel)
 	case *LetExpr:
 		valueReg := be.CompileExpr(n.Value, false)
 		be.varRegisterMap[n.Variable.Name] = valueReg
@@ -296,6 +318,7 @@ func (be *BytecodeEmitter) CompileExpr(expr Expr, isConditional bool) int {
 		if reg, found := be.varRegisterMap[e.Name]; found {
 			return reg
 		}
+		slog.Debug("var map: ", slog.Any("map", be.varRegisterMap))
 		panic(fmt.Sprintf("Variable %s not found", e.Name))
 	case *StringLiteral:
 		reg := be.allocTemp(be.register)
@@ -325,6 +348,11 @@ func (be *BytecodeEmitter) CompileExpr(expr Expr, isConditional bool) int {
 		inputReg := be.allocTemp(reg)
 		be.Emit(SYSCALL, INPUTSTR, reg, inputReg)
 		return inputReg
+	case *UnaryExpr:
+		operandReg := be.CompileExpr(e.Operand, false)
+		resultReg := be.allocTemp(be.register)
+		be.Emit(opcodeMap[e.Operator], operandReg, resultReg)
+		return resultReg
 	case *BinaryExpr:
 		if e.Operator == Eq {
 			ident, ok := e.Left.(*Ident)
@@ -351,6 +379,11 @@ func (be *BytecodeEmitter) CompileExpr(expr Expr, isConditional bool) int {
 		}
 		trueLabel := be.NewLabel()
 		endLabel := be.NewLabel()
+		if e.Operator == EqEq {
+			be.Emit(JMP_IF, leftReg, rightReg, trueLabel)
+		} else {
+			be.Emit(opcodeMap[e.Operator], leftReg, rightReg, trueLabel)
+		}
 		be.Emit(opcodeMap[e.Operator], leftReg, rightReg, trueLabel)
 		be.Emit(LOAD, 0, resultReg)
 		be.Emit(JMP, endLabel)
@@ -367,20 +400,6 @@ func (be *BytecodeEmitter) CompileExpr(expr Expr, isConditional bool) int {
 		}
 		be.Emit(MOV, val, reg)
 
-	case *IfExpr:
-		condReg := be.CompileExpr(e.Condition, true)
-		thenLabel := be.NewLabel()
-		endLabel := be.NewLabel()
-		be.Emit(JMP_IF, condReg, thenLabel)
-		elseReg := be.CompileExpr(e.ElseBranch, false)
-		resultReg := be.AllocateRegister(fmt.Sprintf("__cond%d", be.register))
-		be.Emit(MOV, elseReg, resultReg)
-		be.Emit(JMP, endLabel)
-		be.EmitLabel(thenLabel)
-		thenReg := be.CompileExpr(e.ThenBranch, false)
-		be.Emit(MOV, thenReg, resultReg)
-		be.EmitLabel(endLabel)
-		return resultReg
 	}
 	return 0
 }

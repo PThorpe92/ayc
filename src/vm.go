@@ -160,6 +160,13 @@ func (vm *GoVM) Exec() {
 			label := op.Args[0].(string)
 			vm.pc = vm.findLabel(label)
 			continue
+		case JMP_IF: // JMP_IF reg, label
+			reg := op.Args[0].(int)
+			label := op.Args[1].(string)
+			if vm.registers[reg].(int) != 0 {
+				vm.pc = vm.findLabel(label)
+				continue
+			}
 		case JGT:
 			reg1, reg2 := getTwoArgs(op.Args)
 			if vm.registers[reg1].(int) > vm.registers[reg2].(int) {

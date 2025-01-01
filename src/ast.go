@@ -188,8 +188,10 @@ func (i *InputStrCall) Print() {
 }
 
 type CallExpr struct {
-	Function Ident
-	Args     FuncArgs
+	Function    Ident
+	Args        FuncArgs
+	IsRecursive bool
+	IsTail      bool
 }
 
 type FuncArg struct {
@@ -225,9 +227,14 @@ func (r *ReturnExpr) Print() {
 
 type FuncDef struct {
 	Name    Ident
-	Params  []Ident
+	Params  []FnParam
 	Body    *Block
 	RetType string
+}
+
+type FnParam struct {
+	Name string
+	Type tokenKind
 }
 
 type FuncArgs struct {
@@ -271,16 +278,16 @@ func (i *InputIntCall) Print() {
 	fmt.Printf("InputCall %s", i.Input)
 }
 
-// IfExpr represents a conditional expression (e.g., `if ... then ... else ...`)
-type IfExpr struct {
-	Condition  Expr
-	ThenBranch Expr
-	ElseBranch Expr
+// IfStmt represents a conditional expression (e.g., `if ... then ... else ...`)
+type IfStmt struct {
+	Condition Expr
+	IfBlock   Node
+	ElseBlock Node
 }
 
-func (i *IfExpr) Accept(visitor Visitor) {
+func (i *IfStmt) Accept(visitor Visitor) {
 	visitor.Visit(i)
 }
-func (i *IfExpr) Print() {
-	fmt.Printf("IfExpr: if %v then %v else %v\n", i.Condition, i.ThenBranch, i.ElseBranch)
+func (i *IfStmt) Print() {
+	fmt.Printf("IfExpr: if %v then %v\n else %v\n", i.Condition, i.IfBlock, i.ElseBlock)
 }

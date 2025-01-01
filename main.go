@@ -118,7 +118,10 @@ func (a *Ayc) compileToFile() {
 	if a.debug {
 		be.PrintBytecode()
 	}
-	be.OutputToFile(*a.outputFile)
+	err := be.OutputToFile(*a.outputFile)
+	if err != nil {
+		fmt.Println("Error writing to file: ", err)
+	}
 }
 
 func (a *Ayc) execRepl() {

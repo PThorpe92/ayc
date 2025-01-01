@@ -54,11 +54,12 @@ func isBinaryOperator(tk tokenKind) bool {
 }
 
 type Parser struct {
-	isRepl bool
-	input  string
-	tokens []Token
-	pos    int
-	Ast    *AST
+	isRepl   bool
+	input    string
+	tokens   []Token
+	pos      int
+	currFunc *FuncDef
+	Ast      *AST
 }
 
 func (parser *Parser) current() *Token {
@@ -106,10 +107,11 @@ func (par *Parser) assertToken(tk *Token, expected tokenKind, err ...string) err
 
 func NewParser(lxr *Lexer) *Parser {
 	parser := &Parser{
-		input:  lxr.src,
-		tokens: lxr.tokens,
-		pos:    0,
-		Ast:    nil,
+		input:    lxr.src,
+		tokens:   lxr.tokens,
+		pos:      0,
+		Ast:      nil,
+		currFunc: nil,
 	}
 	return parser
 }
@@ -135,11 +137,13 @@ func (par *Parser) parseStatement() Node {
 	case Print:
 		return par.parsePrintStatement()
 	case Identifier:
-		return par.parseIdentifier()
+		return par.parseExpression(0)
 	case Defn:
 		return par.parseFunctionDef()
 	case Return:
 		return par.parseReturnStatement()
+	case If:
+		return par.parseIfStatement()
 	case LBrace:
 		return par.parseBlock()
 	case EOF:
@@ -177,7 +181,6 @@ func (par *Parser) parseDeclaration() Node {
 	if err := par.assertToken(par.current(), Eq, ""); err != nil {
 		return nil
 	}
-
 	par.next()
 	return &LetExpr{
 		Variable: Ident{Name: ident.val},
@@ -202,9 +205,14 @@ func (par *Parser) parseFunctionCall(fName string) *CallExpr {
 	}
 
 	par.next()
+	isRecursive := false
+	if par.currFunc != nil && par.currFunc.Name.Name == fName {
+		isRecursive = true
+	}
 	return &CallExpr{
-		Function: Ident{Name: fName},
-		Args:     FuncArgs{args},
+		Function:    Ident{Name: fName},
+		Args:        FuncArgs{args},
+		IsRecursive: isRecursive,
 	}
 }
 
@@ -218,22 +226,36 @@ func (par *Parser) parseFunctionDef() Node {
 		return nil
 	}
 	fName := par.current().val
+	par.currFunc = &FuncDef{
+		Name: Ident{fName},
+	}
 	par.next()
 	if err := par.assertToken(par.current(), LParen); err != nil {
 		return nil
 	}
 
 	par.next()
-	params := []Ident{}
+	params := []FnParam{}
 	for par.current().kind != RParen {
+		argName := ""
+		if par.current().kind == Identifier {
+			argName = par.current().val
+			par.next()
+		}
+		typ := Void
+		if par.current().kind == Colon {
+			par.next()
+			if !isType(par.current().kind) {
+				par.assertToken(par.current(), EOF, "Expected type, got %v", par.current().val)
+				return nil
+			}
+			typ = par.current().kind
+			par.next()
+		}
 		if par.current().kind == Comma {
 			par.next()
 		}
-		if err := par.assertToken(par.current(), Identifier); err != nil {
-			return nil
-		}
-		params = append(params, Ident{Name: par.current().val})
-		par.next()
+		params = append(params, FnParam{Name: argName, Type: typ})
 	}
 	par.next() // )
 	if err := par.assertToken(par.current(), Arrow); err != nil {
@@ -251,12 +273,14 @@ func (par *Parser) parseFunctionDef() Node {
 	}
 
 	body := par.parseBlock().(*Block)
-	return &FuncDef{
+	def := &FuncDef{
 		Name:    Ident{Name: fName},
 		Params:  params,
 		Body:    body,
 		RetType: retType,
 	}
+	par.currFunc = def
+	return def
 }
 
 func (par *Parser) parseAssignment(left Expr) Expr {
@@ -270,16 +294,52 @@ func (par *Parser) parseAssignment(left Expr) Expr {
 	}
 }
 
+func (par *Parser) parseIfStatement() Node {
+	par.next()
+	cond := par.parseExpression(5)
+	slog.Debug("Parsing conditional expression", slog.Any("current", par.current()))
+	if err := par.assertToken(par.current(), LBrace); err != nil {
+		return nil
+	}
+	ifBlock := par.parseBlock()
+	if par.current().kind == Else {
+		par.next()
+		if err := par.assertToken(par.current(), LBrace); err != nil {
+			return nil
+		}
+		elseBlk := par.parseBlock()
+		return &IfStmt{
+			Condition: cond,
+			IfBlock:   ifBlock,
+			ElseBlock: elseBlk,
+		}
+	}
+	return &IfStmt{
+		Condition: cond,
+		IfBlock:   ifBlock,
+	}
+}
+
 func (par *Parser) parseBlock() Node {
 	par.next()
 	slog.Debug("Parsing block.", slog.String("curentToken:", par.current().kind.ToString()))
 	var statements []Node
 	for par.current().kind != RBrace {
 		stmt := par.parseStatement()
-		if stmt != nil {
-			statements = append(statements, stmt)
-		} else {
-			break
+		switch st := stmt.(type) {
+		case *ReturnExpr:
+			if call, ok := st.Value.(*CallExpr); ok {
+				call.IsTail = true
+				if call.Function.Name == par.currFunc.Name.Name {
+					call.IsRecursive = true
+				}
+			}
+		default:
+			if stmt != nil {
+				statements = append(statements, stmt)
+			} else {
+				break
+			}
 		}
 	}
 	par.next()
@@ -298,6 +358,10 @@ func (par *Parser) parseIdentifier() Expr {
 	// If the next token is '(', it's a function call.
 	if par.current().kind == LParen {
 		return par.parseFunctionCall(ident)
+	}
+	if par.current().kind == Eq {
+		// If the next token is '=', it's an assignment.
+		return par.parseAssignment(&Ident{Name: ident})
 	}
 	return &Ident{Name: ident}
 }
@@ -345,26 +409,6 @@ func (par *Parser) parseInputCall() Expr {
 	}
 }
 
-func (par *Parser) parseConditionalExpr() Expr {
-	slog.Debug("Parsing conditional expression", slog.Any("current", par.current()))
-	cond := par.parseExpression(5)
-	if err := par.assertToken(par.current(), Then); err != nil {
-		return nil
-	}
-	par.next() // then
-	thenExpr := par.parseExpression(0)
-	if err := par.assertToken(par.current(), Else); err != nil {
-		return nil
-	}
-	par.next() // else
-	elseExpr := par.parseExpression(0)
-	return &IfExpr{
-		Condition:  cond,
-		ThenBranch: thenExpr,
-		ElseBranch: elseExpr,
-	}
-}
-
 func (par *Parser) parseExpression(prec int) Expr {
 	token := par.current()
 	var left Expr
@@ -383,9 +427,6 @@ func (par *Parser) parseExpression(prec int) Expr {
 		par.next()
 	case InputInt, InputStr:
 		left = par.parseInputCall()
-	case If:
-		par.next()
-		left = par.parseConditionalExpr()
 	default:
 		panic(fmt.Sprintf("Unexpected token: %v", token.val))
 	}
@@ -397,33 +438,12 @@ func (par *Parser) parseExpression(prec int) Expr {
 			par.next()
 			right := par.parseExpression(precedence(op))
 			left = &BinaryExpr{Left: left, Operator: op, Right: right}
-		case If:
-			left = par.parseConditionalExprWithPrecedence(left)
 		default:
 			return left
 		}
 	}
 
 	return left
-}
-
-func (par *Parser) parseConditionalExprWithPrecedence(cond Expr) Expr {
-	if err := par.assertToken(par.current(), Then); err != nil {
-		return nil
-	}
-	par.next() // then
-	thenExpr := par.parseExpression(0)
-
-	if err := par.assertToken(par.current(), Else); err != nil {
-		return nil
-	}
-	par.next() // else
-	elseExpr := par.parseExpression(0)
-	return &IfExpr{
-		Condition:  cond,
-		ThenBranch: thenExpr,
-		ElseBranch: elseExpr,
-	}
 }
 
 func precedence(tk tokenKind) int {

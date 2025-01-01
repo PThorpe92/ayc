@@ -68,7 +68,7 @@ var keywords = map[string]tokenKind{
 	"or":        Or,
 	"return":    Return,
 	"not":       Not,
-	"defn":      Defn,
+	"def":       Defn,
 	"int":       Int,
 	"str":       String,
 	"void":      Void,
