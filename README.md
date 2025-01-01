@@ -53,6 +53,10 @@ print(x)
 
 ![image](https://github.com/user-attachments/assets/03b40d4d-6198-438c-8e4e-9ea7c1be9b11)
 
+Makes some attempt at error messages. Although they are most likely the parser's fault and not the users ;)
+
+![image](https://github.com/user-attachments/assets/94f2be7f-83e0-4f5f-8ffb-81723406f67c)
+
 
 #### OUTPUTS
 ```
