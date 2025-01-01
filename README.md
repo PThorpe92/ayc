@@ -11,6 +11,7 @@ So **for the last 4 days of 2024**, I decided to make good on my promise to myse
 
 It's not the greatest language, and there are lots (**LOTS**) of bugs, with many, many unfinished edge-cases. But it has a `REPL`, it can output bytecode to
 a binary file, which it can execute later. It makes an attempt to evaluate `constexpr`'s, and output optimized bytecode.
+![image](https://github.com/user-attachments/assets/03b40d4d-6198-438c-8e4e-9ea7c1be9b11)
 
 ```
 Usage of ./ayc:
