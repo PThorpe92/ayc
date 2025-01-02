@@ -8,11 +8,10 @@ import (
 type GoVM struct {
 	program   []Instruction
 	pc        int
-	sp        int
 	Regs      map[string]int
 	registers [100]interface{}
-	stack     [100]interface{}
-	callstack []int
+	callStack Stack[int]
+	stack     Stack[interface{}]
 	labels    map[string]int
 	symbols   map[string]interface{}
 }
@@ -21,10 +20,9 @@ func NewVM(insns []Instruction) *GoVM {
 	vm := &GoVM{
 		program:   insns,
 		pc:        0,
-		sp:        0,
 		registers: [100]interface{}{},
-		stack:     [100]interface{}{},
-		callstack: []int{},
+		stack:     Stack[interface{}]{},
+		callStack: Stack[int]{},
 		labels:    make(map[string]int),
 		symbols:   make(map[string]interface{}),
 		Regs:      make(map[string]int),
@@ -42,32 +40,15 @@ type LitValue struct {
 func (vm *GoVM) fetchNext() Instruction {
 	return vm.program[vm.pc]
 }
-func (vm *GoVM) pushCallStack() {
-	vm.callstack = append(vm.callstack, vm.pc)
-}
-
-func (vm *GoVM) popCallStack() {
-	if len(vm.callstack) == 0 {
-		panic("Call stack is empty!")
-	}
-	slog.Debug("Popping call stack: ", slog.Int("pc", vm.pc))
-	vm.pc = vm.callstack[len(vm.callstack)-1]
-	vm.callstack = vm.callstack[:len(vm.callstack)-1]
-}
 
 func (vm *GoVM) pop() interface{} {
-	slog.Debug("popping call stack: ", slog.Any("val", vm.stack[vm.sp]))
-	vm.sp--
-	if vm.sp < 0 {
-		panic("no values on the stack ")
-	}
-	val := vm.stack[vm.sp]
-	return val
+	val := vm.stack.Peek()
+	slog.Debug("Popping data stack: ", slog.Any("val", val))
+	return vm.stack.Pop()
 }
 
 func (vm *GoVM) push(val interface{}) {
-	vm.stack[vm.sp] = val
-	vm.sp++
+	vm.stack.Push(val)
 }
 
 func (vm *GoVM) Exec() {
@@ -79,15 +60,16 @@ func (vm *GoVM) Exec() {
 			dest := op.Args[1].(int)
 			switch srcVal := src.(type) {
 			case int:
-				vm.registers[dest] = srcVal
-			case string:
-				if val, ok := vm.symbols[srcVal]; ok {
-					vm.registers[dest] = val
-				} else {
-					panic(fmt.Sprintf("Undefined variable: %s", srcVal))
-				}
+				// register value by default
+				vm.registers[dest] = vm.registers[srcVal]
+			case Register:
+				vm.registers[dest] = vm.registers[int(srcVal)]
+			case *LitValue:
+				vm.registers[dest] = srcVal.Value
+			case LitValue:
+				vm.registers[dest] = srcVal.Value
 			default:
-				vm.registers[dest] = vm.registers[src.(int)]
+				vm.registers[dest] = srcVal.(int)
 			}
 		case ADD:
 			// ADD reg1, reg2, dest
@@ -98,6 +80,15 @@ func (vm *GoVM) Exec() {
 				vm.registers[dest] = arg1 + vm.registers[arg2].(int)
 			case string:
 				vm.registers[dest] = arg1 + vm.registers[arg2].(string)
+			case *LitValue:
+				switch v := arg1.Value.(type) {
+				case int:
+					vm.registers[dest] = v + vm.registers[arg2].(int)
+				case string:
+					vm.registers[dest] = v + vm.registers[arg2].(string)
+				}
+			default:
+				panic("Unknown type")
 			}
 		case SUB:
 			// SUB reg1, reg2, dest
@@ -117,20 +108,26 @@ func (vm *GoVM) Exec() {
 			vm.registers[dest] = vm.registers[arg1].(int) % vm.registers[arg2].(int)
 		case FNCALL:
 			// always push return value onto the stack
-			vm.callstack = append(vm.callstack, vm.pc)
 			label := op.Args[0].(string)
+			slog.Debug("PC before fncall:", slog.Int("pc", vm.pc))
+			vm.callStack.Push(vm.pc + 1)
 			vm.pc = vm.labels[label]
-			slog.Debug("Calling function: ", slog.String("label", label), slog.Int("pc", vm.pc))
+			slog.Debug("PC after fncall: ", slog.String("label", label), slog.Int("pc", vm.pc))
 			continue
 		case RET:
-			vm.popCallStack()
+			vm.pc = vm.callStack.Pop()
+			// the return value of the function should be in RAX
+			slog.Debug("Returning from function: ", slog.Int("pc", vm.pc), slog.Any("rax", vm.registers[RAX]))
+			continue
 		case SYSCALL:
+			slog.Debug("SYSTEM CALL ")
 			// CALL func args...
 			fn := op.Args[0].(Opcode)
 			switch fn {
 			case PRINT:
-				val := op.Args[1].(int)
-				switch val := vm.registers[val].(type) {
+				val := vm.registers[op.Args[1].(int)]
+				slog.Debug("Printing value: ", slog.Any("val", val))
+				switch val := val.(type) {
 				case int:
 					fmt.Printf("PRINT: %d\n", val)
 				case string:
@@ -160,10 +157,25 @@ func (vm *GoVM) Exec() {
 			label := op.Args[0].(string)
 			vm.pc = vm.findLabel(label)
 			continue
-		case JMP_IF: // JMP_IF reg, label
+		case JMP_IF: // JMP_IF reg1, reg2, label
+			reg := op.Args[0].(int)
+			reg2 := op.Args[1].(int)
+			label := op.Args[2].(string)
+			if vm.registers[reg].(int) == vm.registers[reg2].(int) {
+				vm.pc = vm.findLabel(label)
+				continue
+			}
+		case JNT:
 			reg := op.Args[0].(int)
 			label := op.Args[1].(string)
-			if vm.registers[reg].(int) != 0 {
+			if vm.registers[reg].(int) == 0 {
+				vm.pc = vm.findLabel(label)
+				continue
+			}
+		case JNE:
+			reg1, reg2 := getTwoArgs(op.Args)
+			if vm.registers[reg1].(int) != vm.registers[reg2].(int) {
+				label := op.Args[2].(string)
 				vm.pc = vm.findLabel(label)
 				continue
 			}
@@ -171,29 +183,37 @@ func (vm *GoVM) Exec() {
 			reg1, reg2 := getTwoArgs(op.Args)
 			if vm.registers[reg1].(int) > vm.registers[reg2].(int) {
 				label := op.Args[2].(string)
-				reg := vm.findLabel(label)
-				vm.pc = reg
+				vm.pc = vm.findLabel(label)
+				continue
 			}
 		case JLT:
-			reg1, reg2 := getTwoArgs(op.Args)
-			if vm.registers[reg1].(int) < vm.registers[reg2].(int) {
+			arg1, arg2 := getTwoArgs(op.Args)
+			reg, ok := vm.registers[arg1].(int)
+			if !ok {
+				reg = arg1
+			}
+			reg2, ok := vm.registers[arg1].(int)
+			if !ok {
+				reg2 = arg2
+			}
+			if reg < reg2 {
 				label := op.Args[2].(string)
-				reg := vm.findLabel(label)
-				vm.pc = reg
+				vm.pc = vm.findLabel(label)
+				continue
 			}
 		case JGE:
 			reg1, reg2 := getTwoArgs(op.Args)
-			if vm.registers[reg1].(int) <= vm.registers[reg2].(int) {
+			if vm.registers[reg1].(int) >= vm.registers[reg2].(int) {
 				label := op.Args[2].(string)
-				reg := vm.findLabel(label)
-				vm.pc = reg
+				vm.pc = vm.findLabel(label)
+				continue
 			}
 		case JLE:
 			reg1, reg2 := getTwoArgs(op.Args)
 			if vm.registers[reg1].(int) <= vm.registers[reg2].(int) {
 				label := op.Args[2].(string)
-				reg := vm.findLabel(label)
-				vm.pc = reg
+				vm.pc = vm.findLabel(label)
+				continue
 			}
 		case LABEL:
 			label := op.Args[0].(string)
@@ -238,12 +258,17 @@ func (vm *GoVM) Exec() {
 		case LOAD:
 			// LOAD val, dest
 			switch val := op.Args[0].(type) {
+			case Register:
+				vm.registers[op.Args[1].(int)] = vm.registers[val].(int)
 			case int:
-				vm.registers[op.Args[1].(int)] = val
+				vm.registers[op.Args[1].(int)] = vm.registers[val]
+			case *LitValue:
+				slog.Debug("Loading literal value: ", slog.Any("var", val.Value))
+				vm.registers[op.Args[1].(int)] = val.Value
 			case string:
 				slog.Debug("Loading variable: ", slog.String("var", val))
 				// load the string value into the register
-				vm.registers[op.Args[1].(int)] = val
+				vm.registers[op.Args[1].(int)] = vm.symbols[val]
 			}
 		case STORE:
 			// STORE reg, addr. store register into variable
@@ -256,13 +281,16 @@ func (vm *GoVM) Exec() {
 		case PUSH:
 			switch val := op.Args[0].(type) {
 			case Register:
+				slog.Debug("Pushing register val onto the stack: ", slog.Any("val", vm.registers[val]))
 				vm.push(vm.registers[val])
 			case *LitValue:
 				slog.Debug("Pushing literal val onto the stack: ", slog.Any("val", val.Value))
 				vm.push(val.Value)
 			case *NumLiteral:
+				slog.Debug("Pushing literal val onto the stack: ", slog.Any("val", val.Value))
 				vm.push(vm.registers[val.Value])
 			case int:
+				slog.Debug("Pushing register value onto the stack: ", slog.Any("val", vm.registers[val]))
 				vm.push(vm.registers[val])
 			}
 		case POP:

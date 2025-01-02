@@ -122,6 +122,34 @@ type Ident struct {
 	Name string
 }
 
+type Array struct {
+	Items []Expr
+}
+
+func (a *Array) Accept(visitor Visitor) {
+	visitor.Visit(a)
+}
+
+func (a *Array) Print() {
+	fmt.Printf("Array: %v\n", a.Items)
+}
+
+type ForLoop struct {
+	Var       Expr
+	Start     Expr
+	Condition Expr
+	Step      Expr
+	Body      Node
+}
+
+func (f *ForLoop) Accept(visitor Visitor) {
+	visitor.Visit(f)
+}
+
+func (f *ForLoop) Print() {
+	fmt.Printf("ForLoop: %v %v %v %v\n", f.Var, f.Start, f.Condition, f.Step)
+}
+
 func (i *Ident) Accept(visitor Visitor) {
 	visitor.Visit(i)
 }
@@ -229,7 +257,7 @@ type FuncDef struct {
 	Name    Ident
 	Params  []FnParam
 	Body    *Block
-	RetType string
+	RetType tokenKind
 }
 
 type FnParam struct {
@@ -267,7 +295,7 @@ func (f *FuncDef) Accept(visitor Visitor) {
 }
 
 func (f *FuncDef) Print() {
-	fmt.Printf("Func: body: %v, params: %v", f.Body, f.Params)
+	fmt.Printf("Func: body: %v, params: %v, retType: %s", f.Body, f.Params, f.RetType.ToString())
 }
 
 func (i *InputIntCall) Accept(visitor Visitor) {

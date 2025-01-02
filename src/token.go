@@ -93,6 +93,8 @@ const (
 	Semicolon
 	False
 	And
+	For
+	While
 	Not
 	Or
 	Return
@@ -204,6 +206,12 @@ func (tk tokenKind) ToString() string {
 		return "Defn"
 	case Void:
 		return "Void"
+	case Int:
+		return "Int"
+	case For:
+		return "For"
+	case InputStr:
+		return "InputStr"
 	default:
 		return "Unknown"
 	}

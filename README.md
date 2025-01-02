@@ -28,28 +28,7 @@ Usage of ./ayc:
 
 ### Syntax:
 
-"python, with type hints, and 'let'"
-
-
-Currently only supports `input` + `print` for stdin/out
-
-```python
-
-def foo(n: int, acc: int) -> int {
-	let x = 168
-	if (n > 10) {
-	    x = 100 
-	} else {
-	     x = 50
-	}
-	let y = acc + x
-	print(x + y)
-}
-let var = input("enter a number to add to result of foo: ")
-let next = input("enter another number: ")
-let x = foo(var, next)
-print(x)
-```
+"python, with type hints, `let`, and braces"
 
 ![image](https://github.com/user-attachments/assets/03b40d4d-6198-438c-8e4e-9ea7c1be9b11)
 
@@ -58,43 +37,99 @@ Makes some attempt at error messages. Although they are most likely the parser's
 ![image](https://github.com/user-attachments/assets/94f2be7f-83e0-4f5f-8ffb-81723406f67c)
 
 
-#### OUTPUTS
-```
-0: JMP [__begin%]
-1: LABEL [__func%_foo]
-2: POP [1]
-3: POP [2]
-4: LOAD [168 3]
-5: LOAD [10 4]
-6: JGT [2 4 0x3]    ; bug :)
-7: JGT [2 4 0x3]
-8: LOAD [0 5]
-9: JMP [0x4]
-10: LABEL [0x3]
-11: LOAD [1 5]
-12: LABEL [0x4]
-13: JMP_IF [5 0x1]
-14: JMP [0x2]
-15: LABEL [0x1]
-16: LABEL [0x2]
-17: ADD [1 3 6]
-18: ADD [3 6 7]
-19: SYSCALL [PRINT 7]
-20: PUSH [0]
-21: RET []
-22: LABEL [__begin%]
-23: LOAD [enter a number to add to result of foo:  8]
-24: SYSCALL [INPUT 8 8]
-25: LOAD [enter another number:  9]
-26: SYSCALL [INPUT 9 9]
-27: PUSH [9]
-28: PUSH [8]
-29: FCALL [__func%_foo]
-30: POP [10]
-31: SYSCALL [PRINT 10]
-32: HALT [0]
-enter a number to add to result of foo: 23
-enter another number: 42
+Currently only supports `input` + `print` for stdin/out
 
-PRINT: 359
+
+### Recursive fizzbuzz:
+(because functional reasons... not because I'm too lazy to implement `for` loops)
+
+```python
+
+def fizz(n: int, acc: int) -> int {
+	if (acc == 0) {
+		return 0
+	}
+  if ((n % 3) == 0) {
+      print("fizz")
+   }
+   if ((n % 5) == 0) {
+	  print("buzz")
+  } else {
+	print("fizzbuzz")
+  }
+	fizz(n + 1, acc - 1)
+}
+
+let in = input("enter a number to print fizzbuzz to: ")
+fizz(in, in)
+```
+
+OUTPUTS:
+
+```py
+0: LABEL [__begin%_]
+1: MOV [0xc00002d4e0 1]
+2: SYSCALL [INPUT 1 2]
+3: PUSH [2]
+4: PUSH [2]
+5: FCALL [__func%_fizz]
+6: HALT [0]
+7: LABEL [__func%_fizz]
+8: POP [3]
+9: POP [4]
+10: MOV [0xc00002d5c0 5]
+11: JMP_IF [3 5 0x3]
+12: MOV [0xc00002d5e0 6]
+13: JMP [0x4]
+14: LABEL [0x3]
+15: MOV [0xc00002d630 6]
+16: LABEL [0x4]
+17: JNT [6 0x1]
+18: MOV [0xc00002d670 7]
+19: MOV [7 0]
+20: RET []
+21: JMP [0x2]
+22: LABEL [0x1]
+23: LABEL [0x2]
+24: MOV [0xc00002d6e0 8]
+25: MOD [4 8 9]
+26: MOV [0xc00002d6f0 10]
+27: JMP_IF [9 10 0x7]
+28: MOV [0xc00002d710 11]
+29: JMP [0x8]
+30: LABEL [0x7]
+31: MOV [0xc00002d760 11]
+32: LABEL [0x8]
+33: JNT [11 0x5]
+34: MOV [0xc00002d7a0 12]
+35: SYSCALL [PRINT 12]
+36: JMP [0x6]
+37: LABEL [0x5]
+38: LABEL [0x6]
+39: MOV [0xc00002d820 13]
+40: MOD [4 13 14]
+41: MOV [0xc00002d830 15]
+42: JMP_IF [14 15 0xb]
+43: MOV [0xc00002d850 16]
+44: JMP [0xc]
+45: LABEL [0xb]
+46: MOV [0xc00002d8a0 16]
+47: LABEL [0xc]
+48: JNT [16 0x9]
+49: MOV [0xc00002d8e0 17]
+50: SYSCALL [PRINT 17]
+51: JMP [0xa]
+52: LABEL [0x9]
+53: MOV [0xc00002d940 18]
+54: SYSCALL [PRINT 18]
+55: LABEL [0xa]
+56: MOV [0xc00002d980 19]
+57: ADD [4 19 20]
+58: PUSH [20]
+59: MOV [0xc00002d9a0 21]
+60: SUB [3 21 22]
+61: PUSH [22]
+62: FCALL [__func%_fizz]
+63: LOAD [0xc00002d9e0 0]
+64: RET []
 ```

@@ -72,6 +72,8 @@ var keywords = map[string]tokenKind{
 	"int":       Int,
 	"str":       String,
 	"void":      Void,
+	"for":       For,
+	"while":     While,
 }
 
 func (lxr *Lexer) skipComment() {

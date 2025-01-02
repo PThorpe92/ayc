@@ -21,7 +21,7 @@ type BytecodeEmitter struct {
 func NewBytecodeEmitter() *BytecodeEmitter {
 	return &BytecodeEmitter{
 		Instructions:   []Instruction{},
-		register:       1, // 0 is reserved for the return value
+		register:       1,
 		labelCounter:   0,
 		varRegisterMap: make(map[string]int),
 		funcMap:        make(map[string]string),
@@ -30,21 +30,27 @@ func NewBytecodeEmitter() *BytecodeEmitter {
 
 func (be *BytecodeEmitter) Walk(ast *AST) {
 	mainLabel := "__begin%"
-	be.Emit(JMP, mainLabel)
-	stmts := ast.Root.(*Program).Statements
-	for _, stmt := range stmts {
+
+	for _, stmt := range ast.Root.(*Program).Statements {
 		if fn, ok := stmt.(*FuncDef); ok {
-			be.Visit(fn) // emit the labels early
+			funcLabel := "__func%_" + fn.Name.Name
+			be.funcMap[fn.Name.Name] = funcLabel
 		}
 	}
 	be.EmitLabel(mainLabel)
-	for _, stmt := range stmts {
+	for _, stmt := range ast.Root.(*Program).Statements {
 		if _, ok := stmt.(*FuncDef); !ok {
 			be.Visit(stmt)
 		}
 	}
 	be.Emit(HALT, 0)
+	for _, stmt := range ast.Root.(*Program).Statements {
+		if fn, ok := stmt.(*FuncDef); ok {
+			be.Visit(fn)
+		}
+	}
 }
+
 func (be *BytecodeEmitter) OutputToFile(file string) error {
 	if !strings.HasSuffix(file, ".aycb") {
 		file += ".aycb"
@@ -111,14 +117,17 @@ const (
 	RSHIFT
 	MOV
 	SYSCALL
+	CMP
 	LOAD
 	PUSH
 	POP
 	STORE
 	FNCALL
+	JNE
 	RET
 	JMP
 	JMP_IF
+	JNT
 	LABEL
 	MOV_IF
 	NOP
@@ -136,18 +145,6 @@ func init() {
 	gob.Register(Opcode(0))
 	gob.Register(Register(0))
 	gob.Register(LitValue{})
-	gob.Register(TempReg{})
-}
-
-type TempReg struct {
-	Reg int
-}
-
-func (t *TempReg) Accept(visitor Visitor) {
-	visitor.Visit(t)
-}
-func (t *TempReg) Print() {
-	fmt.Printf("TempReg: %d\n", t.Reg)
 }
 
 var opMap = map[Opcode]string{
@@ -159,6 +156,7 @@ var opMap = map[Opcode]string{
 	MOD:      "MOD",
 	JMP:      "JMP",
 	JMP_IF:   "JMP_IF",
+	JNT:      "JNT",
 	JLE:      "JLE",
 	NOT:      "NOT",
 	BAND:     "BAND",
@@ -171,10 +169,12 @@ var opMap = map[Opcode]string{
 	RSHIFT:   "RSHIFT",
 	PUSH:     "PUSH",
 	POP:      "POP",
+	JNE:      "JNE",
 	MOV:      "MOV",
 	JGE:      "JGE",
 	JGT:      "JGT",
 	FNCALL:   "FCALL",
+	JLT:      "JLT",
 	RET:      "RET",
 	SYSCALL:  "SYSCALL",
 	PRINT:    "PRINT",
@@ -197,18 +197,21 @@ var opcodeMap = map[tokenKind]Opcode{
 	BitNot: BNOT,
 	LShift: LSHIFT,
 	RShift: RSHIFT,
+	Return: RET,
 	Eq:     MOV,
 	Gt:     JGT,
 	Lt:     JLT,
 	Gte:    JGE,
 	Lte:    JLE,
-	Return: RET,
-	EqEq:   MOV_IF,
+	EqEq:   JMP_IF,
+	Neq:    JNE,
 }
 
 func (be *BytecodeEmitter) Emit(opcode Opcode, args ...interface{}) {
 	be.Instructions = append(be.Instructions, Instruction{Opcode: opcode, Args: args})
 }
+
+const RAX = 0
 
 func (be *BytecodeEmitter) AllocateRegister(name string) int {
 	if reg, exists := be.varRegisterMap[name]; exists {
@@ -245,12 +248,10 @@ func (be *BytecodeEmitter) Visit(node Node) {
 		funcLabel := "__func%_" + n.Name.Name
 		be.EmitLabel(funcLabel)
 		be.funcMap[n.Name.Name] = funcLabel
-		tmp := n.Params
-		slices.Reverse(tmp)
-		for _, param := range tmp {
+		slices.Reverse(n.Params)
+		for _, param := range n.Params {
 			reg := be.AllocateRegister(param.Name)
 			be.Emit(POP, reg)
-			slog.Debug("Allocated register for param %s: %d", param.Name, reg)
 			be.varRegisterMap[param.Name] = reg
 		}
 		hasRet := false
@@ -259,14 +260,15 @@ func (be *BytecodeEmitter) Visit(node Node) {
 			case *ReturnExpr:
 				hasRet = true
 				valReg := be.CompileExpr(st.Value, false)
-				be.Emit(PUSH, Register(valReg))
+				be.Emit(MOV, Register(valReg), RAX)
 				be.Emit(RET)
+				return
 			default:
 				be.Visit(st)
 			}
 		}
 		if !hasRet {
-			be.Emit(PUSH, 0)
+			be.Emit(LOAD, &LitValue{0}, RAX)
 			be.Emit(RET)
 		}
 	case *CallExpr:
@@ -274,13 +276,24 @@ func (be *BytecodeEmitter) Visit(node Node) {
 	case *IfStmt:
 		elseLabel := be.NewLabel()
 		endLabel := be.NewLabel()
-		condReg := be.CompileExpr(n.Condition, true)
-		be.Emit(JMP_IF, condReg, elseLabel)
-		be.Visit(n.IfBlock)
+		tmp := be.CompileExpr(n.Condition, true)
+		be.Emit(JNT, tmp, elseLabel)
+		for _, stmt := range n.IfBlock.(*Block).Statements {
+			slog.Debug("stmt: ", slog.Any("stmt", stmt))
+			be.Visit(stmt)
+		}
 		be.Emit(JMP, endLabel)
 		be.EmitLabel(elseLabel)
-		be.Visit(n.ElseBlock)
+		if n.ElseBlock != nil {
+			for _, stmt := range n.ElseBlock.(*Block).Statements {
+				be.Visit(stmt)
+			}
+		}
 		be.EmitLabel(endLabel)
+	case *ReturnExpr:
+		valReg := be.CompileExpr(n.Value, false)
+		be.Emit(MOV, Register(valReg), RAX)
+		be.Emit(RET)
 	case *LetExpr:
 		valueReg := be.CompileExpr(n.Value, false)
 		be.varRegisterMap[n.Variable.Name] = valueReg
@@ -310,7 +323,7 @@ func (be *BytecodeEmitter) CompileExpr(expr Expr, isConditional bool) int {
 	case *NumLiteral:
 		reg := be.register
 		be.register++
-		be.Emit(LOAD, e.Value, reg)
+		be.Emit(MOV, &LitValue{e.Value}, reg)
 		return reg
 	case *FuncArg:
 		return be.CompileExpr(e.Value, false)
@@ -322,32 +335,34 @@ func (be *BytecodeEmitter) CompileExpr(expr Expr, isConditional bool) int {
 		panic(fmt.Sprintf("Variable %s not found", e.Name))
 	case *StringLiteral:
 		reg := be.allocTemp(be.register)
-		be.Emit(LOAD, e.string, reg)
+		be.Emit(MOV, &LitValue{e.string}, reg)
 		return reg
 	case *CallExpr:
-		fnLabel := be.funcMap[e.Function.Name]
-		argRegs := []int{}
+		fnLabel, exists := be.funcMap[e.Function.Name]
+		if !exists {
+			panic(fmt.Sprintf("Undefined function: %s", e.Function.Name))
+		}
 		for _, arg := range e.Args.Args {
 			argReg := be.CompileExpr(arg.Value, false)
-			argRegs = append(argRegs, argReg)
-		}
-		for i := len(argRegs) - 1; i >= 0; i-- {
-			be.Emit(PUSH, Register(argRegs[i]))
+			be.Emit(PUSH, Register(argReg))
 		}
 		be.Emit(FNCALL, fnLabel)
-		resultReg := be.AllocateRegister(fmt.Sprintf("__res%d", be.register))
-		be.Emit(POP, resultReg)
-		return resultReg
+		return RAX
 	case *InputIntCall:
 		reg := be.CompileExpr(e.Input, false)
-		inputReg := be.allocTemp(reg)
-		be.Emit(SYSCALL, INPUT, reg, inputReg)
-		return inputReg
+		tmp := be.allocTemp(be.register)
+		be.Emit(SYSCALL, INPUT, reg, tmp)
+		return tmp
+	case *ReturnExpr:
+		reg := be.CompileExpr(e.Value, false)
+		be.Emit(MOV, Register(reg), RAX)
+		be.Emit(RET)
+		return RAX
 	case *InputStrCall:
 		reg := be.CompileExpr(e.Input, false)
-		inputReg := be.allocTemp(reg)
-		be.Emit(SYSCALL, INPUTSTR, reg, inputReg)
-		return inputReg
+		tmp := be.allocTemp(be.register)
+		be.Emit(SYSCALL, INPUTSTR, reg, tmp)
+		return tmp
 	case *UnaryExpr:
 		operandReg := be.CompileExpr(e.Operand, false)
 		resultReg := be.allocTemp(be.register)
@@ -360,35 +375,30 @@ func (be *BytecodeEmitter) CompileExpr(expr Expr, isConditional bool) int {
 				panic("Left-hand side of assignment must be an identifier")
 			}
 			valueReg := be.CompileExpr(e.Right, false)
-			var reg int
-			if existingReg, found := be.varRegisterMap[ident.Name]; found {
-				reg = existingReg
-			} else {
-				reg = be.AllocateRegister(ident.Name)
-			}
-			be.varRegisterMap[ident.Name] = reg
-			be.Emit(STORE, valueReg, ident.Name)
+			reg := be.AllocateRegister(ident.Name)
+			be.Emit(MOV, Register(valueReg), reg)
 			return reg
 		}
 		leftReg := be.CompileExpr(e.Left, isConditionalOp(e.Operator))
 		rightReg := be.CompileExpr(e.Right, isConditionalOp(e.Operator))
-		resultReg := be.AllocateRegister(fmt.Sprintf("__temp%d", be.register))
-		if !isConditional {
-			be.Emit(opcodeMap[e.Operator], leftReg, rightReg, resultReg) // Perform operation
+		if !isConditionalOp(e.Operator) { // Handle arithmetic or bitwise operators
+			resultReg := be.AllocateRegister(fmt.Sprintf("__temp%d", be.register))
+			be.Emit(opcodeMap[e.Operator], leftReg, rightReg, resultReg)
 			return resultReg
 		}
 		trueLabel := be.NewLabel()
 		endLabel := be.NewLabel()
-		if e.Operator == EqEq {
-			be.Emit(JMP_IF, leftReg, rightReg, trueLabel)
-		} else {
+		switch e.Operator {
+		case EqEq, Neq, Gt, Gte, Lt, Lte:
 			be.Emit(opcodeMap[e.Operator], leftReg, rightReg, trueLabel)
+		default:
+			panic(fmt.Sprintf("Unhandled operator %v in BinaryExpr", e.Operator))
 		}
-		be.Emit(opcodeMap[e.Operator], leftReg, rightReg, trueLabel)
-		be.Emit(LOAD, 0, resultReg)
+		resultReg := be.allocTemp(be.register)
+		be.Emit(MOV, &LitValue{0}, resultReg)
 		be.Emit(JMP, endLabel)
 		be.EmitLabel(trueLabel)
-		be.Emit(LOAD, 1, resultReg)
+		be.Emit(MOV, &LitValue{Value: 1}, resultReg)
 		be.EmitLabel(endLabel)
 		return resultReg
 

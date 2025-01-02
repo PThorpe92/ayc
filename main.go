@@ -94,9 +94,7 @@ func (a *Ayc) execInput(input *string) {
 	}
 	be := src.NewBytecodeEmitter()
 	be.Walk(ast)
-	if a.debug {
-		be.PrintBytecode()
-	}
+	be.PrintBytecode()
 	vm := src.NewVM(be.Instructions)
 	vm.Exec()
 }

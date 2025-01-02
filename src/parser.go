@@ -3,7 +3,6 @@ package src
 import (
 	"fmt"
 	"log/slog"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -28,6 +27,10 @@ func (s *Stack[T]) Get(idx int) T {
 
 func (s *Stack[T]) Push(v T) {
 	s.t = append(s.t, v)
+}
+
+func (s *Stack[T]) Set(idx int, v T) {
+	s.t[idx] = v
 }
 
 func (s *Stack[T]) Pop() T {
@@ -62,6 +65,11 @@ type Parser struct {
 	Ast      *AST
 }
 
+/*
+let x = 5
+x = x + 10
+print(x)
+*/
 func (parser *Parser) current() *Token {
 	if parser.pos < len(parser.tokens) {
 		return &parser.tokens[parser.pos]
@@ -98,7 +106,7 @@ func (par *Parser) assertToken(tk *Token, expected tokenKind, err ...string) err
 		fmt.Println(par.PrintError(tk, expected))
 		fmt.Println(err)
 		if !par.isRepl {
-			os.Exit(1)
+			panic(fmt.Sprintf("Expected %v, got %v", expected, tk.kind))
 		}
 		return fmt.Errorf("Expected %v, got %v", expected, tk.kind)
 	}
@@ -146,6 +154,8 @@ func (par *Parser) parseStatement() Node {
 		return par.parseIfStatement()
 	case LBrace:
 		return par.parseBlock()
+	case For:
+		return par.parseForLoop()
 	case EOF:
 		return nil
 	default:
@@ -166,8 +176,51 @@ func (par *Parser) parsePrintStatement() Node {
 
 func (par *Parser) parseReturnStatement() Node {
 	par.next()
+	slog.Debug("Parsing return statement. Current token: ", slog.String("token", par.current().kind.ToString()))
 	expr := par.parseExpression(0)
+	par.evalReturnType(&expr)
 	return &ReturnExpr{Value: expr}
+}
+
+func (par *Parser) evalReturnType(expr *Expr) {
+	switch ex := (*expr).(type) {
+	case *CallExpr:
+		if ex.Function.Name == par.currFunc.Name.Name {
+			ex.IsTail = true
+			ex.IsRecursive = true
+		}
+	case *BinaryExpr:
+		if call, ok := ex.Right.(*CallExpr); ok {
+			call.IsTail = true
+			if call.Function.Name == par.currFunc.Name.Name {
+				call.IsRecursive = true
+			}
+		}
+		if call, ok := ex.Left.(*CallExpr); ok {
+			call.IsTail = true
+			if call.Function.Name == par.currFunc.Name.Name {
+				call.IsRecursive = true
+			}
+		}
+	case *Ident:
+		if slices.ContainsFunc(par.currFunc.Params, func(p FnParam) bool {
+			return p.Name == ex.Name && p.Type != par.currFunc.RetType
+		}) {
+			panic(fmt.Sprintf("Expected return type %v, got %v", par.currFunc.RetType, ex.Name))
+		}
+	case *NumLiteral:
+		if par.currFunc.RetType != Int {
+			panic(fmt.Sprintf("Expected return type %v, got %v", par.currFunc.RetType, ex.Value))
+		}
+	case *StringLiteral:
+		if par.currFunc.RetType != String {
+			panic(fmt.Sprintf("Expected return type %v, got %v", par.currFunc.RetType, ex.string))
+		}
+	case *BoolLiteral:
+		if par.currFunc.RetType != Bool {
+			panic(fmt.Sprintf("Expected return type %v, got %v", par.currFunc.RetType, ex.bool))
+		}
+	}
 }
 
 func (par *Parser) parseDeclaration() Node {
@@ -230,10 +283,37 @@ func (par *Parser) parseFunctionDef() Node {
 		Name: Ident{fName},
 	}
 	par.next()
+	params := par.parseFuncParams()
+	if err := par.assertToken(par.current(), Arrow); err != nil {
+		return nil
+	}
+	par.next() // ->
+	retType := par.current().kind
+	par.currFunc.RetType = retType
+	slog.Debug("Parsing function definition", slog.String("currentToken", par.current().kind.ToString()))
+	if !isType(retType) {
+		panic(fmt.Sprintf("Expected type, got %v", par.current().kind))
+	}
+	par.next()
+	if err := par.assertToken(par.current(), LBrace); err != nil {
+		return nil
+	}
+	body := par.parseBlock().(*Block)
+	def := &FuncDef{
+		Name:    Ident{Name: fName},
+		Params:  params,
+		Body:    body,
+		RetType: retType,
+	}
+	def.Print()
+	par.currFunc = def
+	return def
+}
+
+func (par *Parser) parseFuncParams() []FnParam {
 	if err := par.assertToken(par.current(), LParen); err != nil {
 		return nil
 	}
-
 	par.next()
 	params := []FnParam{}
 	for par.current().kind != RParen {
@@ -258,29 +338,7 @@ func (par *Parser) parseFunctionDef() Node {
 		params = append(params, FnParam{Name: argName, Type: typ})
 	}
 	par.next() // )
-	if err := par.assertToken(par.current(), Arrow); err != nil {
-		return nil
-	}
-
-	par.next() // ->
-	if !isType(par.current().kind) {
-		panic(fmt.Sprintf("Expected type, got %v", par.current().kind))
-	}
-	retType := par.current().val
-	par.next()
-	if err := par.assertToken(par.current(), LBrace); err != nil {
-		return nil
-	}
-
-	body := par.parseBlock().(*Block)
-	def := &FuncDef{
-		Name:    Ident{Name: fName},
-		Params:  params,
-		Body:    body,
-		RetType: retType,
-	}
-	par.currFunc = def
-	return def
+	return params
 }
 
 func (par *Parser) parseAssignment(left Expr) Expr {
@@ -314,9 +372,39 @@ func (par *Parser) parseIfStatement() Node {
 			ElseBlock: elseBlk,
 		}
 	}
+	slog.Debug("Parsed if statement", slog.Any("ifBlock", ifBlock))
 	return &IfStmt{
 		Condition: cond,
 		IfBlock:   ifBlock,
+	}
+}
+func (par *Parser) parseForLoop() Node {
+	par.next()
+	if err := par.assertToken(par.current(), LParen); err != nil {
+		return nil
+	}
+	par.next()
+	init := par.parseStatement()
+	if err := par.assertToken(par.current(), Semicolon); err != nil {
+		return nil
+	}
+	par.next()
+	cond := par.parseExpression(0)
+	if err := par.assertToken(par.current(), Semicolon); err != nil {
+		return nil
+	}
+	par.next()
+	incr := par.parseStatement()
+	if err := par.assertToken(par.current(), RParen); err != nil {
+		return nil
+	}
+	par.next()
+	body := par.parseBlock()
+	return &ForLoop{
+		Var:       init,
+		Condition: cond,
+		Step:      incr,
+		Body:      body,
 	}
 }
 
@@ -334,6 +422,7 @@ func (par *Parser) parseBlock() Node {
 					call.IsRecursive = true
 				}
 			}
+			statements = append(statements, stmt)
 		default:
 			if stmt != nil {
 				statements = append(statements, stmt)
@@ -367,6 +456,9 @@ func (par *Parser) parseIdentifier() Expr {
 }
 
 func (par *Parser) parseGrouping() Expr {
+	if err := par.assertToken(par.current(), LParen, "You likely forgot an opening parenthesis"); err != nil {
+		return nil
+	}
 	par.next()
 	expr := par.parseExpression(0)
 	if err := par.assertToken(par.current(), RParen, "You likely forgot a closing parenthesis"); err != nil {
@@ -410,6 +502,7 @@ func (par *Parser) parseInputCall() Expr {
 }
 
 func (par *Parser) parseExpression(prec int) Expr {
+	slog.Debug("Parsing expression", slog.String("currentToken", par.current().kind.ToString()))
 	token := par.current()
 	var left Expr
 	switch token.kind {
@@ -433,7 +526,7 @@ func (par *Parser) parseExpression(prec int) Expr {
 
 	for prec < precedence(par.current().kind) {
 		switch par.current().kind {
-		case Plus, Minus, Mul, Div, EqEq, Neq, Gt, Lt, Gte, Lte:
+		case Plus, Minus, Mul, Div, EqEq, Neq, Gt, Lt, Gte, Lte, Mod:
 			op := par.current().kind
 			par.next()
 			right := par.parseExpression(precedence(op))
@@ -450,7 +543,7 @@ func precedence(tk tokenKind) int {
 	switch tk {
 	case Plus, Minus:
 		return 10
-	case Mul, Div:
+	case Mul, Div, Mod:
 		return 20
 	case Neq, Gt, EqEq, Lt, Gte, Lte:
 		return 5
